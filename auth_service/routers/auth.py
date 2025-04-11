@@ -14,7 +14,7 @@ router = APIRouter()
 ACCESS_TOKEN_EXPIRE_MINUTES = 30  # можно также вынести в настройки
 
 
-@router.post("/token")
+@router.post("/token", summary="Получи свой токен", description="Жми и у тебя появится токен, который никому не нужен, но зато он у тебя будет")
 async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
         db: AsyncSession = Depends(get_db)
@@ -32,7 +32,7 @@ async def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/verify")
+@router.get("/verify", summary="Убедись что ты авторизован", description="Если ты увидишь свой ник, то ты авторизирован!!!")
 async def verify_token(
         user: models.User = Depends(get_current_user)
 ):
