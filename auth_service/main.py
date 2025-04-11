@@ -1,23 +1,28 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from routers.auth import router as auth_router
 from routers.users import router as users_router
-
+import models
+import schemas
+from database import get_db
 
 app = FastAPI(
-    title="AuthService API",
-    version="1.0.0",
+    title="Chatty",
+    version="0.0.1",
     openapi_url="/openapi.json",
+    description="Волшебный мир общения",  #описание (опционально)
     docs_url="/docs",
     redoc_url="/redoc",
     root_path="",
     root_path_in_servers=True
 )
 
+app.include_router(auth_router, prefix="/auth", tags=["Авторизация"])
+app.include_router(users_router, prefix="/users", tags=["Пользователи"])
 
-app.include_router(auth_router, prefix="/auth", tags=["auth"])
-app.include_router(users_router, prefix="/users", tags=["users"])
-
-
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to AuthService API"}
+@app.get("/", response_model=list[schemas.UserRead])
+async def read_root(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(models.User))
+    users = result.scalars().all()
+    return users
