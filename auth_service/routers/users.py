@@ -1,15 +1,18 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
 import models, schemas
 from database import get_db
-from utils.security import (
-    get_password_hash, get_current_user, create_email_token, verify_email_token, send_email,
-    verify_password
-)
+from utils.security import (get_password_hash, get_current_user, create_email_token, verify_email_token, send_email, verify_password)
+from utils.events import send_user_registered_event
+from config import settings
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
 
 @router.post("/register",
              summary="Регистрация пользователя",
@@ -28,8 +31,12 @@ async def create_user(user_in: schemas.UserCreate, db: AsyncSession = Depends(ge
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    try:
+        send_user_registered_event(user.id)  # Отправка события в RabbitMQ
+        logger.info(f"User registered event sent for user_id: {user.id}")
+    except Exception as e:
+        logger.error(f"Failed to send user registered event for user_id {user.id}: {str(e)}")
     return user
-
 
 @router.post("/add-mail",
              summary="Запрос на добавление email",
@@ -48,14 +55,14 @@ async def request_add_email(
         raise HTTPException(status_code=400, detail="Этот email уже используется")
 
     token = create_email_token({"sub": user.username, "email": email_data.email, "action": "add_email"})
-    confirmation_url = f"http://localhost/auth/users/confirm-email?token={token}"
-    send_email(
+    confirmation_url = f"{settings.base_url}/auth/users/confirm-email?token={token}"
+    await send_email(
         email_data.email,
         "Подтверждение добавления email",
         f"Перейдите по ссылке для добавления email: {confirmation_url}"
     )
+    logger.info(f"Email confirmation sent to {email_data.email}")
     return {"message": "Ссылка для подтверждения отправлена на ваш email"}
-
 
 @router.get("/confirm-email", include_in_schema=False)
 async def confirm_email(token: str, db: AsyncSession = Depends(get_db)):
@@ -83,8 +90,8 @@ async def confirm_email(token: str, db: AsyncSession = Depends(get_db)):
     user.email = email
     user.is_active = True
     await db.commit()
+    logger.info(f"Email {email} confirmed for user {username}")
     return {"message": "Email успешно добавлен и подтвержден"}
-
 
 @router.post("/del-mail",
              summary="Запрос на удаление email",
@@ -98,14 +105,14 @@ async def request_delete_email(
         raise HTTPException(status_code=400, detail="Email не привязан")
 
     token = create_email_token({"sub": user.username, "action": "delete_email"})
-    deletion_url = f"http://localhost/auth/users/delete-email?token={token}"
-    send_email(
+    deletion_url = f"{settings.base_url}/auth/users/delete-email?token={token}"
+    await send_email(
         user.email,
         "Подтверждение удаления email",
         f"Перейдите по ссылке для удаления email: {deletion_url}"
     )
+    logger.info(f"Email deletion request sent to {user.email}")
     return {"message": "Ссылка для удаления email отправлена"}
-
 
 @router.get("/delete-email", include_in_schema=False)
 async def confirm_delete_email(token: str, db: AsyncSession = Depends(get_db)):
@@ -124,8 +131,8 @@ async def confirm_delete_email(token: str, db: AsyncSession = Depends(get_db)):
     user.email = None
     user.is_active = False
     await db.commit()
+    logger.info(f"Email removed for user {user.username}")
     return {"message": "Email успешно удален"}
-
 
 @router.post("/del-user",
              summary="Запрос на удаление аккаунта",
@@ -138,20 +145,21 @@ async def delete_user(
 ):
     if user.email and user.is_active:
         token = create_email_token({"sub": user.username, "action": "delete_user"})
-        deletion_url = f"http://localhost/auth/users/delete-user?token={token}"
-        send_email(
+        deletion_url = f"{settings.base_url}/auth/users/delete-user?token={token}"
+        await send_email(
             user.email,
             "Удаление аккаунта",
             f"Перейдите по ссылке для удаления аккаунта: {deletion_url}"
         )
+        logger.info(f"Account deletion request sent to {user.email}")
         return {"message": "Ссылка для удаления аккаунта отправлена"}
     else:
         if not password or not verify_password(password.password, user.hashed_password):
             raise HTTPException(status_code=401, detail="Неверный пароль")
         await db.execute(delete(models.User).where(models.User.id == user.id))
         await db.commit()
+        logger.info(f"User {user.username} deleted via password")
         return {"message": "Аккаунт удален"}
-
 
 @router.get("/delete-user", include_in_schema=False)
 async def confirm_delete_user(token: str, db: AsyncSession = Depends(get_db)):
@@ -166,8 +174,8 @@ async def confirm_delete_user(token: str, db: AsyncSession = Depends(get_db)):
 
     await db.execute(delete(models.User).where(models.User.id == user.id))
     await db.commit()
+    logger.info(f"User {user.username} deleted via email confirmation")
     return {"message": "Аккаунт успешно удален"}
-
 
 @router.patch("/user-edit",
               summary="Редактирование профиля",
@@ -186,4 +194,5 @@ async def edit_user(
 
     await db.commit()
     await db.refresh(user)
+    logger.info(f"User {user.id} updated username to {user.username}")
     return user

@@ -11,6 +11,7 @@ class AuthSettings(BaseSettings):
     db_user: str = 'postgres'
     db_password: str = 'postgres'
     jwt_secret_key: str
+    base_url: str = "http://localhost"  # Базовый URL для ссылок в письмах
 
     @property
     def async_database_url(self) -> str:
