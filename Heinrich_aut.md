@@ -1,4 +1,32 @@
 
+===== auth_service/alembic/versions/2_add_email_and_is_active.py =====
+"""add email and is_active to users
+
+Revision ID: 2_add_email_and_is_active
+Revises: 1d8eaa684b7d
+Create Date: 2025-04-10 21:00:00.000000
+
+"""
+from alembic import op
+import sqlalchemy as sa
+
+revision = '2_add_email_and_is_active'
+down_revision = '1d8eaa684b7d'
+branch_labels = None
+depends_on = None
+
+def upgrade() -> None:
+    op.add_column('users', sa.Column('email', sa.String(), nullable=True))
+    op.add_column('users', sa.Column('is_active', sa.Boolean(), nullable=False, server_default='false'))
+    op.create_unique_constraint('uq_users_email', 'users', ['email'])
+
+def downgrade() -> None:
+    op.drop_constraint('uq_users_email', 'users', type_='unique')
+    op.drop_column('users', 'is_active')
+    op.drop_column('users', 'email')
+
+
+
 ===== auth_service/alembic/version/1d8eaa684b7d_create_users_table.py =====
 """create users table
 
@@ -39,6 +67,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_users_username'), table_name='users')
     op.drop_table('users')
     # ### end Alembic commands ###
+
 
 
 
@@ -149,7 +178,10 @@ def downgrade() -> None:
 
 
 
+
+
 ===== auth_service/routers/auth.py =====
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
@@ -166,7 +198,7 @@ router = APIRouter()
 ACCESS_TOKEN_EXPIRE_MINUTES = 30  # можно также вынести в настройки
 
 
-@router.post("/token")
+@router.post("/token", summary="Получи свой токен", description="Жми и у тебя появится токен, который никому не нужен, но зато он у тебя будет")
 async def login_for_access_token(
         form_data: OAuth2PasswordRequestForm = Depends(),
         db: AsyncSession = Depends(get_db)
@@ -184,7 +216,7 @@ async def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.get("/verify")
+@router.get("/verify", summary="Убедись что ты авторизован", description="Если ты увидишь свой ник, то ты авторизирован!!!")
 async def verify_token(
         user: models.User = Depends(get_current_user)
 ):
@@ -192,37 +224,198 @@ async def verify_token(
 
 
 
+
+
 ===== auth_service/routers/users.py =====
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update, delete
 import models, schemas
 from database import get_db
-from utils.security import get_password_hash
-
+from utils.security import (
+    get_password_hash, get_current_user, create_email_token, verify_email_token, send_email,
+    verify_password
+)
 
 router = APIRouter()
 
 
-@router.post("/register", response_model=schemas.UserRead)
+@router.post("/register",
+             summary="Регистрация пользователя",
+             description="Создает нового пользователя с указанным именем и паролем.",
+             tags=["Пользователи"])
 async def create_user(user_in: schemas.UserCreate, db: AsyncSession = Depends(get_db)):
-    # Проверяем, нет ли такого пользователя
     existing_user = await db.execute(select(models.User).where(models.User.username == user_in.username))
     existing_user = existing_user.scalar_one_or_none()
-
     if existing_user:
         raise HTTPException(status_code=400, detail="Такой пользователь уже существует")
 
-    # Создаем пользователя
     user = models.User(
         username=user_in.username,
         hashed_password=get_password_hash(user_in.password)
     )
-
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    return user
 
+
+@router.post("/add-mail",
+             summary="Запрос на добавление email",
+             description="Отправляет ссылку на указанный email для его привязки к аккаунту.",
+             tags=["Управление email"])
+async def request_add_email(
+        email_data: schemas.EmailAdd,
+        user: models.User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+):
+    if user.email:
+        raise HTTPException(status_code=400, detail="Email уже привязан")
+
+    existing_email = await db.execute(select(models.User).where(models.User.email == email_data.email))
+    if existing_email.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Этот email уже используется")
+
+    token = create_email_token({"sub": user.username, "email": email_data.email, "action": "add_email"})
+    confirmation_url = f"http://localhost/auth/users/confirm-email?token={token}"
+    send_email(
+        email_data.email,
+        "Подтверждение добавления email",
+        f"Перейдите по ссылке для добавления email: {confirmation_url}"
+    )
+    return {"message": "Ссылка для подтверждения отправлена на ваш email"}
+
+
+@router.get("/confirm-email", include_in_schema=False)
+async def confirm_email(token: str, db: AsyncSession = Depends(get_db)):
+    payload = verify_email_token(token)
+    if payload.get("action") != "add_email":
+        raise HTTPException(status_code=400, detail="Неверный токен")
+
+    username = payload.get("sub")
+    email = payload.get("email")
+    if not username or not email:
+        raise HTTPException(status_code=400, detail="Токен не содержит необходимых данных")
+
+    user = await db.execute(select(models.User).where(models.User.username == username))
+    user = user.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    if user.email:
+        raise HTTPException(status_code=400, detail="Email уже привязан")
+
+    existing_email = await db.execute(select(models.User).where(models.User.email == email))
+    if existing_email.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Этот email уже используется")
+
+    user.email = email
+    user.is_active = True
+    await db.commit()
+    return {"message": "Email успешно добавлен и подтвержден"}
+
+
+@router.post("/del-mail",
+             summary="Запрос на удаление email",
+             description="Отправляет ссылку на текущий email для его отвязки от аккаунта.",
+             tags=["Управление email"])
+async def request_delete_email(
+        user: models.User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+):
+    if not user.email:
+        raise HTTPException(status_code=400, detail="Email не привязан")
+
+    token = create_email_token({"sub": user.username, "action": "delete_email"})
+    deletion_url = f"http://localhost/auth/users/delete-email?token={token}"
+    send_email(
+        user.email,
+        "Подтверждение удаления email",
+        f"Перейдите по ссылке для удаления email: {deletion_url}"
+    )
+    return {"message": "Ссылка для удаления email отправлена"}
+
+
+@router.get("/delete-email", include_in_schema=False)
+async def confirm_delete_email(token: str, db: AsyncSession = Depends(get_db)):
+    payload = verify_email_token(token)
+    if payload.get("action") != "delete_email":
+        raise HTTPException(status_code=400, detail="Неверный токен")
+
+    user = await db.execute(select(models.User).where(models.User.username == payload["sub"]))
+    user = user.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    if not user.email:
+        raise HTTPException(status_code=400, detail="Email уже удален")
+
+    user.email = None
+    user.is_active = False
+    await db.commit()
+    return {"message": "Email успешно удален"}
+
+
+@router.post("/del-user",
+             summary="Запрос на удаление аккаунта",
+             description="Отправляет ссылку на email для удаления аккаунта, если email привязан и активен. Иначе требует пароль.",
+             tags=["Пользователи"])
+async def delete_user(
+        password: schemas.PasswordConfirm | None = None,
+        user: models.User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+):
+    if user.email and user.is_active:
+        token = create_email_token({"sub": user.username, "action": "delete_user"})
+        deletion_url = f"http://localhost/auth/users/delete-user?token={token}"
+        send_email(
+            user.email,
+            "Удаление аккаунта",
+            f"Перейдите по ссылке для удаления аккаунта: {deletion_url}"
+        )
+        return {"message": "Ссылка для удаления аккаунта отправлена"}
+    else:
+        if not password or not verify_password(password.password, user.hashed_password):
+            raise HTTPException(status_code=401, detail="Неверный пароль")
+        await db.execute(delete(models.User).where(models.User.id == user.id))
+        await db.commit()
+        return {"message": "Аккаунт удален"}
+
+
+@router.get("/delete-user", include_in_schema=False)
+async def confirm_delete_user(token: str, db: AsyncSession = Depends(get_db)):
+    payload = verify_email_token(token)
+    if payload.get("action") != "delete_user":
+        raise HTTPException(status_code=400, detail="Неверный токен")
+
+    user = await db.execute(select(models.User).where(models.User.username == payload["sub"]))
+    user = user.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    await db.execute(delete(models.User).where(models.User.id == user.id))
+    await db.commit()
+    return {"message": "Аккаунт успешно удален"}
+
+
+@router.patch("/user-edit",
+              summary="Редактирование профиля",
+              description="Позволяет изменить имя пользователя, если новое имя не занято.",
+              tags=["Пользователи"])
+async def edit_user(
+        user_data: schemas.UserEdit,
+        user: models.User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db)
+):
+    if user_data.username and user_data.username != user.username:
+        existing_user = await db.execute(select(models.User).where(models.User.username == user_data.username))
+        if existing_user.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Пользователь с таким именем уже существует")
+        user.username = user_data.username
+
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
@@ -233,6 +426,7 @@ async def create_user(user_in: schemas.UserCreate, db: AsyncSession = Depends(ge
 
 
 ===== auth_service/utilis/events.py =====
+
 # auth_service/utils/events.py
 import pika
 import json
@@ -250,8 +444,11 @@ def send_user_registered_event(user_id):
 
 
 ===== auth_service/utilis/security.py =====
+
+import os
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
@@ -260,86 +457,98 @@ from sqlalchemy import select
 import models
 import schemas
 from database import get_db
+import smtplib
+from email.mime.text import MIMEText
 
+# Загружаем .env.local
+load_dotenv(dotenv_path="/app/.env.local")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
-
-# Секретный ключ для JWT (лучше брать из переменных окружения)
-SECRET_KEY = "your_very_secure_secret_key"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your_very_secure_secret_key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+EMAIL_TOKEN_EXPIRE_MINUTES = 60
 
-# Настройка для хеширования паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# SMTP настройки из переменных окружения
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+
+# Проверка наличия SMTP-учетных данных
+if not SMTP_USER or not SMTP_PASSWORD:
+    raise ValueError("SMTP_USER и SMTP_PASSWORD должны быть заданы в .env.local")
 
 def get_password_hash(password: str) -> str:
-    """
-    Хеширует пароль
-    """
     return pwd_context.hash(password)
 
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Проверяет пароль
-    """
     return pwd_context.verify(plain_password, hashed_password)
 
-
 def create_access_token(data: dict, expires_delta: timedelta = None):
-    """
-    Создает JWT-токен
-    """
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return token
 
+def create_email_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=EMAIL_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return token
+
+def verify_email_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
 
 async def authenticate_user(db: AsyncSession, username: str, password: str):
-    """
-    Проверка логина и пароля пользователя.
-    Возвращает объект пользователя, если аутентификация успешна.
-    """
     user = await db.execute(select(models.User).where(models.User.username == username))
     user = user.scalar_one_or_none()
-    if not user:
-        return False
-    if not verify_password(password, user.hashed_password):
+    if not user or not verify_password(password, user.hashed_password):
         return False
     return user
 
 def verify_token(token: str) -> schemas.TokenData:
-    """
-    Проверяет JWT токен и возвращает данные пользователя.
-    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        # Декодируем токен
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")  # sub (subject) обычно содержит username
+        username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
         return schemas.TokenData(username=username)
     except JWTError:
         raise credentials_exception
 
-
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> models.User:
-    """
-    Зависимость для получения текущего пользователя из JWT токена.
-    """
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
     token_data = verify_token(token)
-    user = models.User(username=token_data.username)
+    user = await db.execute(select(models.User).where(models.User.username == token_data.username))
+    user = user.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
     return user
 
+def send_email(to_email: str, subject: str, body: str):
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = SMTP_USER
+    msg["To"] = to_email
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
 
 
 
@@ -347,6 +556,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> models.User:
 
 
 ===== auth_service/.env.local =====
+
 DB_HOST=auth_db
 DB_PORT=5432
 DB_NAME=AuthDB
@@ -355,6 +565,12 @@ DB_PASSWORD=postgres
 RABBITMQ_HOST=rabbitmq
 RABBITMQ_PORT=5672
 JWT_SECRET_KEY=your_very_secure_random_key_32_chars_long
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=......@gmail.com #ваш маил на котором вы получаете SMT пароль
+SMTP_PASSWORD=.... .... .... .... # SMT пароль
+
+# не забудь удалить text фаил должен называться .env.local
 
 
 
@@ -364,6 +580,7 @@ JWT_SECRET_KEY=your_very_secure_random_key_32_chars_long
 
 
 ===== auth_service/alembic.ini =====
+
 [alembic]
 script_location = alembic
 prepend_sys_path = .
@@ -407,8 +624,8 @@ datefmt = %H:%M:%S
 
 
 
-
 ===== auth_service/config.py =====
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AuthSettings(BaseSettings):
@@ -432,12 +649,11 @@ settings = AuthSettings()
 
 
 
-
 ===== auth_service/database.py =====
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from config import settings
-
 
 # создание движка с пулом подключений
 engine = create_async_engine(
@@ -446,7 +662,7 @@ engine = create_async_engine(
     max_overflow=10,      # Сколько доп. соединений открыть при пиковой нагрузке
     pool_timeout=30,      # Как долго ждать освобождения коннекта (сек)
     pool_recycle=1800,    # Время жизни одного соединения (секунды)
-    echo=False,            # (опционально) логирует SQL-запросы
+    echo=False,           # (опционально) логирует SQL-запросы
 )
 
 AsyncSessionLocal = sessionmaker(
@@ -456,14 +672,14 @@ AsyncSessionLocal = sessionmaker(
 )
 
 async def get_db():
-    async with AsyncSessionLocal() as db:
-        yield db
-
+    async with AsyncSessionLocal() as session:
+        yield session
 
 
 
 
 ===== auth_service/docker-entrypoint.sh =====
+
 #!/bin/sh
 set -e
 
@@ -512,6 +728,8 @@ exec uvicorn main:app --host 0.0.0.0 --port 8003
 
 
 ===== auth_service/Dockerfile =====
+
+
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1
@@ -537,44 +755,51 @@ ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 
 
-
 ===== auth_service/main.py =====
-from fastapi import FastAPI
+
+from fastapi import FastAPI, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from routers.auth import router as auth_router
 from routers.users import router as users_router
-
+import models
+import schemas
+from database import get_db
 
 app = FastAPI(
-    title="AuthService API",
-    version="1.0.0",
+    title="Chatty",
+    version="0.0.1",
     openapi_url="/openapi.json",
+    description="Волшебный мир общения, если не хочешь получить щелбан, то зарегистрируйся!!!!!",
     docs_url="/docs",
     redoc_url="/redoc",
     root_path="",
     root_path_in_servers=True
 )
 
+app.include_router(auth_router, prefix="/auth", tags=["Авторизация"])
+app.include_router(users_router, prefix="/users")
 
-app.include_router(auth_router, prefix="/auth", tags=["auth"])
-app.include_router(users_router, prefix="/users", tags=["users"])
-
-
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to AuthService API"}
-
-
+@app.get("/",
+         response_model=list[schemas.UserRead],
+         summary="Для Теста",
+         description="Все пользователи",
+         tags=["База данных"])
+async def read_root(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(models.User))
+    users = result.scalars().all()
+    return users
 
 
 
 
 
 ===== auth_service/models.py =====
-from sqlalchemy import Column, Integer, String, DateTime, Text, Table, ForeignKey, func
-from sqlalchemy.orm import declarative_base, Mapped, mapped_column, relationship
+
+from sqlalchemy import Column, Integer, String, Boolean
+from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 
 Base = declarative_base()
-
 
 class User(Base):
     __tablename__ = "users"
@@ -582,7 +807,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String, unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String)
-
+    email: Mapped[str] = mapped_column(String, unique=True, nullable=True)  # Email может быть null
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)  # По умолчанию False
 
 
 
@@ -670,15 +896,11 @@ yarl==1.18.3
 
 
 ===== auth_service/schemas.py =====
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, EmailStr
 
-
-# Модель для данных пользователя в JWT
 class TokenData(BaseModel):
     username: str | None = None
 
-#Users
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -686,14 +908,27 @@ class UserCreate(BaseModel):
 class UserRead(BaseModel):
     id: int
     username: str
+    email: str | None
+    is_active: bool
 
     class Config:
         from_attributes = True
+
+class EmailAdd(BaseModel):
+    email: EmailStr
+
+class PasswordConfirm(BaseModel):
+    password: str
+
+class UserEdit(BaseModel):
+    username: str | None = None
+
 
 
 
 
 ===== docker-compose.yml =====
+
 version: "3.8"
 
 services:
@@ -914,8 +1149,44 @@ volumes:
 
 
 
+===== Dockerfile =====
 
-===== nginx.config =====
+FROM ubuntu:latest
+
+# Устанавливаем необходимые зависимости
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpcre3-dev \
+    zlib1g-dev \
+    libssl-dev
+
+# Скачиваем исходный код Nginx
+RUN wget http://nginx.org/download/nginx-1.20.1.tar.gz && \
+    tar -xzf nginx-1.20.1.tar.gz
+
+# Собираем Nginx с модулем ngx_http_auth_request_module
+WORKDIR /nginx-1.20.1
+RUN ./configure --with-http_auth_request_module && \
+    make && \
+    make install
+
+# Копируем вашу конфигурацию Nginx
+COPY nginx.conf /usr/local/nginx/conf/nginx.conf
+
+# (Опционально) Копируем другие файлы, если необходимо
+# COPY ...
+
+# (Опционально) Указываем порт, который будет открыт
+EXPOSE 80
+
+# Запускаем Nginx
+CMD ["/usr/local/nginx/sbin/nginx", "-g", "daemon off;"]
+
+
+
+
+===== nginx.conf =====
+
 user  nginx;
 worker_processes  auto;
 
@@ -999,3 +1270,12 @@ http {
         }
     }
 }
+
+
+
+===== pytest.ini =====
+[pytest]
+pythonpath = .
+
+
+
