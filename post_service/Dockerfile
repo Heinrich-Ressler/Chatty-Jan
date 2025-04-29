@@ -5,17 +5,16 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY . /app
 
-RUN apt-get update && apt-get install -y netcat-openbsd && apt-get clean
+RUN apt-get update && apt-get install -y \
+    netcat-openbsd \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
-#RUN pip install --no-cache-dir --upgrade pip \
-    #&& pip install --no-cache-dir wheel \
-    #&& pip install --no-cache-dir -r requirements.txt
 
-
-RUN chmod +x docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 8006
 
-ENTRYPOINT ["./docker-entrypoint.sh"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -10,14 +10,16 @@ class PostSettings(BaseSettings):
     db_name: str = 'PostDB'
     db_user: str = 'postgres'
     db_password: str = 'postgres'
+    base_url: str = "http://localhost"
+    minio_endpoint: str = "minio:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "posts"
+    auth_service_url: str = "http://auth_service:8003/auth/verify"
+    rabbitmq_url: str = "amqp://guest:guest@rabbitmq:5672/"
 
     @property
     def async_database_url(self) -> str:
         return f'postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}'
-
-    @property
-    def sync_database_url(self) -> str:  # <-- вот это добавь
-        return f'postgresql+psycopg2://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}'
-
 
 settings = PostSettings()

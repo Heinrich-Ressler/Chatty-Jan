@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-
 wait_for_db() {
   echo "Waiting for database at $DB_HOST:$DB_PORT..."
   while ! nc -z "$DB_HOST" "$DB_PORT"; do
@@ -10,7 +9,6 @@ wait_for_db() {
   done
   echo "Database is ready!"
 }
-
 
 wait_for_rabbitmq() {
   echo "Waiting for RabbitMQ at $RABBITMQ_HOST:$RABBITMQ_PORT..."
@@ -28,4 +26,4 @@ echo "Applying Alembic migrations..."
 alembic upgrade head
 
 echo "Starting PostService..."
-exec uvicorn main:app --host 0.0.0.0 --port 8006 --reload
+exec uvicorn main:app --host 0.0.0.0 --port 8006

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -7,27 +7,28 @@ class PostBase(BaseModel):
     content: str
 
 class PostCreate(PostBase):
-    author_id: int
+    pass
 
 class PostUpdate(PostBase):
-    pass
+    title: Optional[str] = None
+    content: Optional[str] = None
 
 class PostOut(PostBase):
     id: int
     author_id: int
+    author_username: str
     created_at: datetime
     image_url: Optional[str] = None
+    likes_count: int
+    comments_count: int
 
-    class Config:
-        orm_mode = True
-
+    model_config = ConfigDict(from_attributes=True)
 
 class CommentBase(BaseModel):
     content: str
 
 class CommentCreate(CommentBase):
-    post_id: int
-    author_id: int
+    pass
 
 class CommentUpdate(CommentBase):
     pass
@@ -36,16 +37,41 @@ class CommentOut(CommentBase):
     id: int
     post_id: int
     author_id: int
+    author_username: str
     created_at: datetime
 
-    class Config:
-        orm_mode = True
-
+    model_config = ConfigDict(from_attributes=True)
 
 class LikeOut(BaseModel):
-    id: int
     post_id: int
     user_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
+class PostCreatedEvent(BaseModel):
+    post_id: int
+    user_id: int
+    title: str
+
+class PostDeletedEvent(BaseModel):
+    post_id: int
+    user_id: int
+
+class CommentCreatedEvent(BaseModel):
+    comment_id: int
+    post_id: int
+    user_id: int
+    content: str
+
+class CommentDeletedEvent(BaseModel):
+    comment_id: int
+    post_id: int
+    user_id: int
+
+class LikeAddedEvent(BaseModel):
+    post_id: int
+    user_id: int
+
+class LikeRemovedEvent(BaseModel):
+    post_id: int
+    user_id: int
