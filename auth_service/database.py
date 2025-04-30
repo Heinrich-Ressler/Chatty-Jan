@@ -1,7 +1,7 @@
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from config import settings
-
 
 # создание движка с пулом подключений
 engine = create_async_engine(
@@ -10,7 +10,7 @@ engine = create_async_engine(
     max_overflow=10,      # Сколько доп. соединений открыть при пиковой нагрузке
     pool_timeout=30,      # Как долго ждать освобождения коннекта (сек)
     pool_recycle=1800,    # Время жизни одного соединения (секунды)
-    echo=False,            # (опционально) логирует SQL-запросы
+    echo=False,           # (опционально) логирует SQL-запросы
 )
 
 AsyncSessionLocal = sessionmaker(
@@ -20,5 +20,5 @@ AsyncSessionLocal = sessionmaker(
 )
 
 async def get_db():
-    async with AsyncSessionLocal() as db:
-        yield db
+    async with AsyncSessionLocal() as session:
+        yield session

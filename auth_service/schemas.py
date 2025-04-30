@@ -1,12 +1,8 @@
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, EmailStr
 
-
-# Модель для данных пользователя в JWT
 class TokenData(BaseModel):
     username: str | None = None
 
-#Users
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -14,6 +10,19 @@ class UserCreate(BaseModel):
 class UserRead(BaseModel):
     id: int
     username: str
+    email: str | None
+    is_active: bool
 
     class Config:
         from_attributes = True
+
+class EmailAdd(BaseModel):
+    email: EmailStr
+
+class PasswordConfirm(BaseModel):
+    password: str
+
+class UserEdit(BaseModel):
+    username: str | None = None
+
+

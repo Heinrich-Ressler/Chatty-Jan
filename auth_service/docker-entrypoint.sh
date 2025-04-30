@@ -37,6 +37,5 @@ wait_for_rabbitmq
 echo "Applying Alembic migrations..."
 alembic upgrade head
 
-export PYTHONPATH=/app:$PYTHONPATH
 echo "Starting AuthService..."
 exec uvicorn main:app --host 0.0.0.0 --port 8003
